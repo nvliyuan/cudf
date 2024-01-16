@@ -16,9 +16,30 @@
 package ai.rapids.cudf;
 
 /**
- * A resource that allocates/deallocates device memory. This is not intended to be something that
- * a user will just subclass. This is intended to be a wrapper around a C++ class that RMM will
- * use directly.
+ * A device memory resource that uses `cudaHostAlloc` and `cudaFreeHost` for allocation and
+ * deallocation.
  */
-public interface RmmDeviceMemoryResource extends RmmMemoryResource {
+public class RmmPinnedHostMemoryResource implements RmmHostMemoryResource {
+  private long handle = 0;
+
+  public RmmPinnedHostMemoryResource() {
+    handle = Rmm.newPinnedHostMemoryResource();
+  }
+  @Override
+  public long getHandle() {
+    return handle;
+  }
+
+  @Override
+  public void close() {
+    if (handle != 0) {
+      Rmm.releasePinnedHostMemoryResource(handle);
+      handle = 0;
+    }
+  }
+
+  @Override
+  public String toString() {
+    return Long.toHexString(getHandle()) + "/PINNED-HOST()";
+  }
 }

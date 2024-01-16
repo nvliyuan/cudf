@@ -16,11 +16,11 @@
 package ai.rapids.cudf;
 
 /**
- * A device memory resource that will pre-allocate a pool of resources and sub-allocate from this
+ * A host memory resource that will pre-allocate a pool of resources and sub-allocate from this
  * pool to improve memory performance.
  */
-public class RmmPoolMemoryResource<C extends RmmDeviceMemoryResource>
-    extends RmmWrappingDeviceMemoryResource<C> {
+public class RmmPoolHostMemoryResource<C extends RmmHostMemoryResource>
+    extends RmmWrappingHostMemoryResource<C> {
   private long handle = 0;
   private final long initSize;
   private final long maxSize;
@@ -32,11 +32,11 @@ public class RmmPoolMemoryResource<C extends RmmDeviceMemoryResource>
    * @param initSize the size of the initial pool
    * @param maxSize the size of the maximum pool
    */
-  public RmmPoolMemoryResource(C wrapped, long initSize, long maxSize) {
+  public RmmPoolHostMemoryResource(C wrapped, long initSize, long maxSize) {
     super(wrapped);
     this.initSize = initSize;
     this.maxSize = maxSize;
-    this.handle = Rmm.newPoolMemoryResourceDevice(wrapped.getHandle(), initSize, maxSize);
+    this.handle = Rmm.newPoolMemoryResourceHost(wrapped.getHandle(), initSize, maxSize);
   }
 
   public long getMaxSize() {
@@ -51,7 +51,7 @@ public class RmmPoolMemoryResource<C extends RmmDeviceMemoryResource>
   @Override
   public void close() {
     if (handle != 0) {
-      Rmm.releasePoolMemoryResourceDevice(handle);
+      Rmm.releasePoolMemoryResourceHost(handle);
       handle = 0;
     }
     super.close();

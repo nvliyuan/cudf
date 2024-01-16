@@ -16,9 +16,9 @@
 package ai.rapids.cudf;
 
 /**
- * A resource that allocates/deallocates device memory. This is not intended to be something that
+ * A resource that allocates/deallocates host memory. This is not intended to be something that
  * a user will just subclass. This is intended to be a wrapper around a C++ class that RMM will
  * use directly.
  */
-public interface RmmDeviceMemoryResource extends RmmMemoryResource {
+public interface RmmHostMemoryResource extends RmmMemoryResource {
 }
