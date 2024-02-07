@@ -13,7 +13,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
+#include <cuda/memory_resource>
 #include <cudf/aggregation.hpp>
 #include <cudf/groupby.hpp>
 #include <cudf/io/parquet.hpp>
@@ -28,6 +28,8 @@
 #include <rmm/mr/device/cuda_memory_resource.hpp>
 #include <rmm/mr/device/device_memory_resource.hpp>
 #include <rmm/mr/device/pool_memory_resource.hpp>
+#include <rmm/mr/host/pinned_memory_resource.hpp>
+#include <rmm/mr/host/host_memory_resource.hpp>
 
 #include <memory>
 #include <string>
@@ -43,24 +45,32 @@ cudf::io::table_with_metadata read_parquet(
   auto source_info = cudf::io::source_info(file_path);
   auto builder     = cudf::io::parquet_reader_options::builder(source_info);
   //auto options     = builder.build();
-  auto options     = builder.columns({col_name}).build();
-  auto res = cudf::io::read_parquet(options);
-  std::cout << "table of " << res.tbl->num_rows() << " rows scanned" << std::endl;
-  for (int i = 0; i < res.tbl->num_columns(); ++i) { 
-    std::cout << "Col " << i 
-              << " num_rows: " << res.tbl->get_column(i).size() 
-              << " num_nulls: " << res.tbl->get_column(i).null_count() << std::endl;
+  cudf::io::parquet_reader_options options;
+  if (col_name == "ALL") {
+    options = builder.build();
+  } else {
+    options = builder.columns({col_name}).build();
   }
-
-  return res;
+  auto reader = cudf::io::chunked_parquet_reader(1L*1024*1024, 4L*1024*1024, options);
+  while (reader.has_next()) {
+    auto res = reader.read_chunk();
+    std::cout << "table of " << res.tbl->num_rows() << " rows scanned" << std::endl;
+    for (int i = 0; i < res.tbl->num_columns(); ++i) { 
+      std::cout << "Col " << i 
+                << " num_rows: " << res.tbl->get_column(i).size() 
+                << " num_nulls: " << res.tbl->get_column(i).null_count() << std::endl;
+    }
+    return res;
+  }
+  return cudf::io::table_with_metadata{};
 }
 
 void simple_int_column(int num_rows)
 {  
   std::string filepath("/home/abellina/table_with_dict.parquet");
 
-  auto valids = cudf::detail::make_counting_transform_iterator(
-    0, [](auto i) { return i % 2 == 0; });
+  [[maybe_unused]] auto valids = cudf::detail::make_counting_transform_iterator(
+    0, [](auto i) { return 1; }); //i % 2 == 0; });
     //0, [](auto i) { return i == 123 || i == 555 ? 0 : 1; });
     
   /// 0, [](auto i) { return 1; });
@@ -79,9 +89,10 @@ void simple_int_column(int num_rows)
 int main(int argc, char** argv)
 {
   cudaSetDevice(0);
+
   //auto resource       = cudf::test::create_memory_resource("pool");
-  auto resource = cudf::test::create_memory_resource("cuda");
-  // auto resource       = cudf::test::create_memory_resource("async");
+  //auto resource = cudf::test::create_memory_resource("cuda");
+  auto resource       = cudf::test::create_memory_resource("cuda");
   rmm::mr::set_current_device_resource(resource.get());
 
   // Read data
@@ -157,37 +168,46 @@ std::string store_col_names[] = {
  "s_tax_precentage" //: decimal(5,2) (nullable = true)
 };
 
- for (std::string col : col_names) {
-   setenv("USE_FIXED_OP", "0", 1);
-   auto expected = read_parquet(name, col);
-   cudaDeviceSynchronize();
+  std::string bad_file_col_names[] = {
+    "ss_sold_time_sk",
+    "ss_hdemo_sk",
+    "ss_store_sk"
+  };
 
-   setenv("USE_FIXED_OP", "2", 1);
-   auto actual = read_parquet(name, col);
-   cudaDeviceSynchronize();
-   CUDF_TEST_EXPECT_TABLES_EQUAL(expected.tbl->view(), actual.tbl->view());
-   std::cout << "done" << std::endl;
- }
- //  setenv("USE_FIXED_OP", "0", 1);
- //  auto expected = read_parquet(name, "ALL");
- //  cudaDeviceSynchronize();
 
- //  setenv("USE_FIXED_OP", "2", 1);
- //  auto actual = read_parquet(name, "ALL");
+ //for (std::string col : bad_file_col_names) {
+ //  // setenv("USE_FIXED_OP", "0", 1);
+ //  // auto expected = read_parquet(name, col);
+ //  // cudaDeviceSynchronize();
+
+ //  //setenv("USE_FIXED_OP", "2", 1);
+ //  read_parquet(name, col);
  //  cudaDeviceSynchronize();
- //  CUDF_TEST_EXPECT_TABLES_EQUAL(expected.tbl->view(), actual.tbl->view());
+ //  // CUDF_TEST_EXPECT_TABLES_EQUAL(expected.tbl->view(), actual.tbl->view());
  //  std::cout << "done" << std::endl;
+//}
+ for (int i  = 0; i < 1; ++i) {
+  setenv("USE_FIXED_OP", "0", 1);
+  auto expected = read_parquet(name, "ALL");
+  cudaDeviceSynchronize();
+
+  setenv("USE_FIXED_OP", "2", 1);
+  auto actual = read_parquet(name, "ALL");
+  //read_parquet(name, "ALL");
+  cudaDeviceSynchronize();
+  //CUDF_TEST_EXPECT_TABLES_EQUAL(expected.tbl->view(), actual.tbl->view());
+  std::cout << "done " << i << std::endl;
+ }
 
 
- //[[maybe_unused]] int num_rows = 128;
  //if (argc > 1) {
  //  num_rows = atoi(argv[1]);
  //}
- ////simple_int_column(10000);
- //auto simple = read_parquet("/home/abellina/table_with_dict.parquet", "dummy");
+ //simple_int_column(17);
+ //read_parquet("/home/abellina/table_with_dict.parquet", "ALL");
 
- // std::cout << "over here: " << cudf::test::to_string(simple.tbl->get_column(0).view(), std::string(",")) << std::endl;
- // std::cout << "done" << std::endl;
+// std::cout << "over here: " << cudf::test::to_string(simple.tbl->get_column(0).view(), std::string(",")) << std::endl;
+ //std::cout << "done" << std::endl;
 
   return 0;
 }

@@ -243,22 +243,17 @@ __device__ cuda::std::pair<int, int> gpuDecodeDictionaryIndices(page_state_s* s,
   int dict_bits      = s->dict_bits;
   int pos            = s->dict_pos;
   int str_len        = 0;
-  [[maybe_unused]] int print_it = s->dict_run <= 0;
   
   while (pos < target_pos) {
-    [[maybe_unused]] int last_pos = pos;
     int is_literal, batch_len;
     if (!t) {
       uint32_t run       = s->dict_run;
       uint8_t const* cur = s->data_start;
-      [[maybe_unused]] uint8_t const* start_cur = cur;
-      int bytecnt = -1;
       if (run <= 1) {
-        print_it = 1;
         run = (cur < end) ? get_vlq32(cur, end) : 0;
         if (!(run & 1)) {
           // Repeated value
-          bytecnt = (dict_bits + 7) >> 3;
+          int bytecnt = (dict_bits + 7) >> 3;
           if (cur + bytecnt <= end) {
             int32_t run_val = cur[0];
             if (bytecnt > 1) {
@@ -346,8 +341,6 @@ __device__ cuda::std::pair<int, int> gpuDecodeDictionaryIndices(page_state_s* s,
       }
     }
 
-    print_it = 0;
-
     // if we're computing sizes, add the length(s)
     if constexpr (sizes_only) {
       int const len = [&]() {
@@ -366,7 +359,6 @@ __device__ cuda::std::pair<int, int> gpuDecodeDictionaryIndices(page_state_s* s,
       str_len += WarpReduce(temp_storage).Sum(len);
     }
 
-    last_pos = pos;
     pos += batch_len;
   }
   return {pos, str_len};
@@ -517,14 +509,10 @@ __device__ void gpuDecodeStream(
   int32_t num_input_values  = s->num_input_values;
   int32_t value_count       = s->lvl_count[lvl];
   int32_t batch_coded_count = 0;
-  [[maybe_unused]] bool new_or_initial = value_count == 0;
-
-  [[maybe_unused]] int the_level_run = level_run;
   while (s->error == 0 && value_count < target_count && value_count < num_input_values) {
     int batch_len;
     // TODO: we need to print values here to compare with rle_stream
     if (level_run <= 1) {
-      new_or_initial = true;
       // Get a new run symbol from the byte stream
       int sym_len = 0;
       if (!t) {
@@ -547,7 +535,6 @@ __device__ void gpuDecodeStream(
       sym_len   = shuffle(sym_len);
       level_val = shuffle(level_val);
       level_run = shuffle(level_run);
-      the_level_run = level_run;
       cur_def += sym_len;
     }
     
@@ -584,11 +571,9 @@ __device__ void gpuDecodeStream(
     //    "t: %i is_literal: %i level_run: %i batch_len: %i\n", 
     //    t, the_level_run & 1, the_level_run, batch_len);
     //}
-    new_or_initial = false;
 
     if (t < batch_len) {
       int idx                                      = value_count + t;
-      //printf("old[%i]=%i\n", idx, level_val);
       output[rolling_index<rolling_buf_size>(idx)] = level_val;
     }
     batch_coded_count += batch_len;
@@ -1285,7 +1270,6 @@ inline __device__ bool setupLocalPageInfo(page_state_s* const s,
         int max_depth = s->col.max_nesting_depth;
         for (int idx = 0; idx < max_depth; idx++) {
           PageNestingDecodeInfo* nesting_info = &s->nesting_info[idx];
-          //printf("nested info at idx %i max_depth %i\n", idx, max_depth);
 
           size_t output_offset;
           // schemas without lists
@@ -1300,7 +1284,6 @@ inline __device__ bool setupLocalPageInfo(page_state_s* const s,
           // TODO: ab why is this ok
           if (s->col.column_data_base != nullptr) {
             // ok this becomes 0 column_data_base[1]
-            //printf("s->col.column_data_base[idx] %" PRIu64 " idx %i\n", s->col.column_data_base[idx], idx);
             nesting_info->data_out = static_cast<uint8_t*>(s->col.column_data_base[idx]);
             if (s->col.column_string_base != nullptr) {
               nesting_info->string_out = static_cast<uint8_t*>(s->col.column_string_base[idx]);
@@ -1325,8 +1308,6 @@ inline __device__ bool setupLocalPageInfo(page_state_s* const s,
               nesting_info->valid_map += output_offset >> 5;
               nesting_info->valid_map_offset = (int32_t)(output_offset & 0x1f);
             }
-          } else {
-            printf ("column_data_base is null :(\n");
           }
         }
       }
@@ -1342,9 +1323,6 @@ inline __device__ bool setupLocalPageInfo(page_state_s* const s,
       s->dict_size = 0;
       // NOTE:  if additional encodings are supported in the future, modifications must
       // be made to is_supported_encoding() in reader_impl_preprocess.cu
-      #ifdef ABDEBUG
-      printf("page encoding: %i\n", s->page.encoding);
-      #endif
       switch (s->page.encoding) {
         case Encoding::PLAIN_DICTIONARY:
         case Encoding::RLE_DICTIONARY:
