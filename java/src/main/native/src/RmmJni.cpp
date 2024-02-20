@@ -566,7 +566,7 @@ JNIEXPORT void JNICALL Java_ai_rapids_cudf_Rmm_setCuioCurrentHostMemoryResource(
                                                                                 jlong handle) {
   try {
     cudf::jni::auto_set_device(env);
-    auto ptr = reinterpret_cast<cudf::host_resource_ref*>(handle);
+    auto ptr = reinterpret_cast<rmm::mr::pool_memory_resource<rmm::mr::pinned_host_memory_resource> *>(handle);
     cudf::io::set_current_host_memory_resource(*ptr);
   }
   CATCH_STD(env, )
