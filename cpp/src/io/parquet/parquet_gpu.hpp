@@ -93,10 +93,10 @@ constexpr bool is_supported_encoding(Encoding enc)
  */
 constexpr void set_error(kernel_error::value_type error, kernel_error::pointer error_code)
 {
-  if (error != 0) {
-    cuda::atomic_ref<kernel_error::value_type, cuda::thread_scope_device> ref{*error_code};
-    ref.fetch_or(error, cuda::std::memory_order_relaxed);
-  }
+  //if (error != 0) {
+  //  cuda::atomic_ref<kernel_error::value_type, cuda::thread_scope_device> ref{*error_code};
+  //  ref.fetch_or(error, cuda::std::memory_order_relaxed);
+  //}
 }
 
 /**
