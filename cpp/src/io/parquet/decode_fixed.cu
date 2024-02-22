@@ -373,7 +373,7 @@ __global__ void __launch_bounds__(decode_block_size) gpuDecodePageDataFixedDict(
   size_t num_rows,
   int page_idx_filter)
 #else
-__global__ void __launch_bounds__(decode_block_size) gpuDecodePageDataFixedDict(
+__global__ void __launch_bounds__(decode_block_size,8) gpuDecodePageDataFixedDict(
   PageInfo* pages, 
   device_span<ColumnChunkDesc const> chunks, 
   size_t min_row, 
