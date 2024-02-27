@@ -17,6 +17,7 @@
 #pragma once
 
 #include "parquet_gpu.hpp"
+
 #include <cudf/detail/utilities/cuda.cuh>
 
 namespace cudf::io::parquet::detail {
@@ -54,130 +55,98 @@ inline __device__ uint32_t get_vlq32(uint8_t const*& cur, uint8_t const* end)
   return v;
 }
 
-// an individual batch. processed by a warp.
-// batches should be in shared memory.
 template <typename level_t, int max_output_values>
-__device__ inline void decode(
-    level_t* const output, 
-    uint8_t const* const run_start, 
-    int const run_offset,
-    int const run_output_pos,
-    int const level_run,
-    int const size,
-    uint8_t const* const end, 
-    int level_bits, 
-    int lane)
-  {
-    int batch_output_pos = 0;
-    int remain     = size;
+__device__ inline void decode(level_t* const output,
+                              uint8_t const* const run_start,
+                              int const run_offset,
+                              int const run_output_pos,
+                              int const level_run,
+                              int const size,
+                              uint8_t const* const end,
+                              int level_bits,
+                              int lane)
+{
+  // local output_pos for this `decode` call.
+  int decode_output_pos = 0;
+  int remain            = size;
 
-    // for bitpacked/literal runs, total size is always a multiple of 8. so we need to take care if
-    // we are not starting/ending exactly on a run boundary
-    uint8_t const* cur;
-    if (level_run & 1) {
-      int const effective_offset = cudf::util::round_down_safe(run_offset, 8);
-      int const lead_values      = (run_offset - effective_offset);
-      batch_output_pos -= lead_values;
-      remain += lead_values;
-      cur = run_start + ((effective_offset >> 3) * level_bits);
-    }
+  // for bitpacked/literal runs, total size is always a multiple of 8. so we need to take care if
+  // we are not starting/ending exactly on a run boundary
+  uint8_t const* cur;
+  if (level_run & 1) {
+    int const effective_offset = cudf::util::round_down_safe(run_offset, 8);
+    int const lead_values      = (run_offset - effective_offset);
+    decode_output_pos -= lead_values;
+    remain += lead_values;
+    cur = run_start + ((effective_offset >> 3) * level_bits);
+  }
 
-    // if this is a repeated run, compute the repeated value
-    int level_val;
-    if (!(level_run & 1)) {
-      level_val = run_start[0];
-      // TODO (abellina): describe why you need this change
-      if constexpr (sizeof(level_t) > 1) {
-        if (level_bits > 8) {
-          level_val |= run_start[1] << 8;
-          if constexpr (sizeof(level_t) > 2) {
-            if (level_bits > 16) {
-              level_val |= run_start[2] << 16;
-              if constexpr (sizeof(level_t) > 3) {
-                if (level_bits > 24) {
-                  level_val |= run_start[3] << 24;
-                }
-              }
+  // if this is a repeated run, compute the repeated value
+  int level_val;
+  if (!(level_run & 1)) {
+    level_val = run_start[0];
+    if constexpr (sizeof(level_t) > 1) {
+      if (level_bits > 8) {
+        level_val |= run_start[1] << 8;
+        if constexpr (sizeof(level_t) > 2) {
+          if (level_bits > 16) {
+            level_val |= run_start[2] << 16;
+            if constexpr (sizeof(level_t) > 3) {
+              if (level_bits > 24) { level_val |= run_start[3] << 24; }
             }
           }
         }
       }
-    }
-
-    // process
-    while (remain > 0) {
-      int const batch_len = min(32, remain);
-
-      // if this is a literal run. each thread computes its own level_val
-      if (level_run & 1) {
-        int const batch_len8 = (batch_len + 7) >> 3;
-        if (lane < batch_len) {
-          int bitpos                = lane * level_bits;
-          uint8_t const* cur_thread = cur + (bitpos >> 3);
-          bitpos &= 7;
-          level_val = 0;
-          if (cur_thread < end) { level_val = cur_thread[0]; }
-          cur_thread++;
-          if constexpr (sizeof(level_t) > 1) {
-            if (level_bits > 8 - bitpos && cur_thread < end) {
-              level_val |= cur_thread[0] << 8;
-              cur_thread++;
-              if constexpr (sizeof(level_t) > 2) {
-                if (level_bits > 16 - bitpos && cur_thread < end) { 
-                  level_val |= cur_thread[0] << 16;
-                  cur_thread++;
-                  if constexpr (sizeof(level_t) > 3) {
-                    if (level_bits > 24 - bitpos && cur_thread < end) { 
-                      level_val |= cur_thread[0] << 24;
-                    }
-                  }
-                }
-              }
-            }
-          }
-          level_val = (level_val >> bitpos) & ((1 << level_bits) - 1);
-        }
-
-        cur += batch_len8 * level_bits;
-      }
-
-      // store level_val
-      if (lane < batch_len && (lane + batch_output_pos) >= 0) { 
-        auto idx = lane + run_output_pos + run_offset + batch_output_pos; // TODO abellina: why run_output_pos AND run_offset too
-        output[rolling_index<max_output_values>(idx)] = level_val;
-      }
-      remain -= batch_len;
-      batch_output_pos += batch_len;
     }
   }
+
+  // process
+  while (remain > 0) {
+    int const batch_len = min(32, remain);
+
+    // if this is a literal run. each thread computes its own level_val
+    if (level_run & 1) {
+      int const batch_len8 = (batch_len + 7) >> 3;
+      if (lane < batch_len) {
+        int bitpos                = lane * level_bits;
+        uint8_t const* cur_thread = cur + (bitpos >> 3);
+        bitpos &= 7;
+        level_val = 0;
+        if (cur_thread < end) { level_val = cur_thread[0]; }
+        cur_thread++;
+        if (level_bits > 8 - bitpos && cur_thread < end) {
+          level_val |= cur_thread[0] << 8;
+          cur_thread++;
+          if (level_bits > 16 - bitpos && cur_thread < end) {
+            level_val |= cur_thread[0] << 16;
+            cur_thread++;
+            if (level_bits > 24 - bitpos && cur_thread < end) { level_val |= cur_thread[0] << 24; }
+          }
+        }
+        level_val = (level_val >> bitpos) & ((1 << level_bits) - 1);
+      }
+
+      cur += batch_len8 * level_bits;
+    }
+
+    // store level_val
+    if (lane < batch_len && (lane + decode_output_pos) >= 0) {
+      auto idx = lane + run_output_pos + run_offset + decode_output_pos;
+      output[rolling_index<max_output_values>(idx)] = level_val;
+    }
+    remain -= batch_len;
+    decode_output_pos += batch_len;
+  }
+}
 
 // a single rle run. may be broken up into multiple rle_batches
 template <typename level_t>
 struct rle_run {
-  int size;         // total size of the run
-  int output_pos;   // absolute position of this run w.r.t output
+  int size;        // total size of the run
+  int output_pos;  // absolute position of this run w.r.t output
   uint8_t const* start;
-  int level_run;    // level_run header value
-  int remaining;    // number of output items remaining to be decoded
-
- //template<int max_output_values>
- //__device__ __inline__ rle_batch<level_t, max_output_values> next_batch(int max_count)
- //{
- //  int const run_offset = size - remaining;          
- //  int batch_len = 
- //  //max(0, 
- //    min(remaining, 
- //      // total
- //      max_count - 
- //      // position + processed by prior batches
- //      (output_pos + run_offset));//); 
- //  return rle_batch<level_t, max_output_values>{
- //    start, 
- //    run_offset, 
- //    output_pos, 
- //    level_run, 
- //    batch_len};
- //}
+  int level_run;  // level_run header value
+  int remaining;  // number of output items remaining to be decoded
 };
 
 // a stream of rle_runs
@@ -221,21 +190,21 @@ struct rle_stream {
     cur        = _start;
     end        = _end;
 
-    output            = _output;
+    output = _output;
 
-    output_pos           = 0;
+    output_pos = 0;
 
     total_values = _total_values;
     cur_values   = 0;
-    fill_index = 0;
-    decode_index = -1;
+    fill_index   = 0;
+    decode_index = -1;  // signals the first iteration. Nothing to decode.
   }
 
   __device__ inline void fill_run_batch()
   {
-    while (((decode_index == -1 && fill_index < num_rle_stream_decode_warps) || 
-            fill_index < decode_index) && 
-            cur < end) {
+    while (((decode_index == -1 && fill_index < num_rle_stream_decode_warps) ||
+            fill_index < decode_index + run_buffer_size) &&
+           cur < end) {
       auto& run = runs[rolling_index<run_buffer_size>(fill_index)];
 
       // Encoding::RLE
@@ -244,12 +213,12 @@ struct rle_stream {
       uint8_t const* _cur = cur;
       int const level_run = get_vlq32(_cur, end);
       // run_bytes includes the header size
-      int run_bytes       = _cur - cur;
+      int run_bytes = _cur - cur;
 
       // literal run
       if (level_run & 1) {
         // multiples of 8
-        run.size            = (level_run >> 1) * 8; 
+        run.size = (level_run >> 1) * 8;
         run_bytes += ((run.size * level_bits) + 7) >> 3;
       }
       // repeated value run
@@ -265,12 +234,23 @@ struct rle_stream {
       output_pos += run.size;
       fill_index++;
     }
-
   }
 
   __device__ inline int decode_next(int t, int count)
   {
     int const output_count = min(count, total_values - cur_values);
+    // special case. if level_bits == 0, just return all zeros. this should tremendously speed up
+    // a very common case: columns with no nulls, especially if they are non-nested
+    if (level_bits == 0) {
+      int written = 0;
+      while (written < output_count) {
+        int const batch_size = min(num_rle_stream_decode_threads, output_count - written);
+        if (t < batch_size) { output[rolling_index<max_output_values>(written + t)] = 0; }
+        written += batch_size;
+      }
+      cur_values += output_count;
+      return output_count;
+    }
 
     // otherwise, full decode.
     int const warp_id        = t / cudf::detail::warp_size;
@@ -282,8 +262,8 @@ struct rle_stream {
     __shared__ int fill_index_shared;
     if (!t) {
       values_processed_shared = 0;
-      decode_index_shared = decode_index;
-      fill_index_shared = fill_index;
+      decode_index_shared     = decode_index;
+      fill_index_shared       = fill_index;
     }
 
     __syncthreads();
@@ -291,69 +271,65 @@ struct rle_stream {
     fill_index = fill_index_shared;
 
     do {
+      // protect against threads advancing past the end of this loop
+      // and updating shared variables.
       __syncthreads();
-      // warp 0 reads ahead and generates batches of runs to be decoded by remaining warps.
+
+      // warp 0 reads ahead and fills `runs` array to be decoded by remaining warps.
       if (!warp_id) {
         // fill the next set of runs. fill_runs will generally be the bottleneck for any
         // kernel that uses an rle_stream.
-        if (!warp_lane) { 
-          fill_run_batch(); 
+        if (!warp_lane) {
+          fill_run_batch();
           if (decode_index == -1) {
             // first time, set it to the beginning of the buffer (rolled)
-            decode_index = run_buffer_size;
+            decode_index        = 0;
             decode_index_shared = decode_index;
-            for (int i = fill_index; i < run_buffer_size; ++i) {
-              runs[i].remaining = 0; // initialize rest
-            }
           }
           fill_index_shared = fill_index;
         }
       }
-      // remaining warps decode the runs
-      // decode_index = -1 is the initial condition, as we want the first iteration to skip decode,
-      // since we are filling.
-      // fill_index is "behind" decode_index, that way we are always decoding upto fill_index,
-      // and we are filling up to decode_index.
-      else if (decode_index >= fill_index) {
+      // remaining warps decode the runs, starting on the second iteration of this
+      // do/while loop (decode_index == -1 means "first iteration", so we should skip decoding)
+      else if (decode_index >= 0 && decode_index + warp_decode_id < fill_index) {
         int const run_index = decode_index + warp_decode_id;
-        auto& run  = runs[rolling_index<run_buffer_size>(run_index)];
-        int remaining = run.remaining;
+        auto& run           = runs[rolling_index<run_buffer_size>(run_index)];
+        // this is the total amount (absolute) we will write in this invocation
+        // of `decode_next`.
         int const max_count = cur_values + output_count;
-        if (remaining > 0 && 
-          // the maximum amount we would write includes this run
-          // this is calculated in absolute position
-          (max_count > run.output_pos)) {
-          int const run_offset = run.size - run.remaining;          
+        // run.output_pos is absolute position, we start decoding
+        // if it's supposed to fit in this call to `decode_next`.
+        if (max_count > run.output_pos) {
+          int remaining        = run.remaining;
+          int const run_offset = run.size - remaining;
+          // last_run_pos is the absolute position of the run, including
+          // what was decoded last time.
           int const last_run_pos = run.output_pos + run_offset;
-          int const batch_len =
-            // max(0,
-            min(run.remaining,
-                // total
-                max_count -
-                  // position + processed by prior batches
-                  (last_run_pos));//);
-          //auto batch = run.next_batch<max_output_values>(max_count);
-          decode<level_t, max_output_values>(
-            output,
-            run.start,
-            run_offset,
-            run.output_pos,
-            run.level_run,
-            batch_len,
-            end,
-            level_bits,
-            warp_lane);
+
+          // the amount we should process is the smallest of current remaining, or
+          // space available in the output buffer (for that last run at the end of
+          // a call to decode_next).
+          int const batch_len = min(remaining, max_count - last_run_pos);
+          decode<level_t, max_output_values>(output,
+                                             run.start,
+                                             run_offset,
+                                             run.output_pos,
+                                             run.level_run,
+                                             batch_len,
+                                             end,
+                                             level_bits,
+                                             warp_lane);
           if (!warp_lane) {
-            auto last_pos = last_run_pos + batch_len - cur_values; 
+            // after writing this batch, are we at the end of the output buffer?
+            auto const at_end = (last_run_pos + batch_len - cur_values == output_count);
+
+            // update remaining for my warp
             remaining -= batch_len;
             // this is the last batch we will process this iteration if:
             // - either this run still has remaining
             // - or it is consumed fully and its last index corresponds to output_count
-            if (remaining > 0 || last_pos == output_count) {
-              values_processed_shared = last_pos;
-            } 
-
-            if (remaining == 0 && (last_pos == output_count || warp_id == num_rle_stream_decode_warps)) {
+            if (remaining > 0 || at_end) { values_processed_shared = output_count; }
+            if (remaining == 0 && (at_end || warp_id == num_rle_stream_decode_warps)) {
               decode_index_shared = run_index + 1;
             }
             run.remaining = remaining;
@@ -362,7 +338,7 @@ struct rle_stream {
       }
       __syncthreads();
       decode_index = decode_index_shared;
-      fill_index = fill_index_shared;
+      fill_index   = fill_index_shared;
     } while (values_processed_shared < output_count);
 
     cur_values += values_processed_shared;
@@ -371,27 +347,7 @@ struct rle_stream {
     return values_processed_shared;
   }
 
-  __device__ inline int decode_next(int t) {
-    int const output_count = min(max_output_values, total_values - cur_values);
-    // special case. if level_bits == 0, just return all zeros. this should tremendously speed up
-    // a very common case: columns with no nulls, especially if they are non-nested
-    // TODO: this may not work with the logic of decode_next
-    // we'd like to remove `roll`.
-    if (level_bits == 0) {
-      int written = 0;
-      while (written < output_count) {
-        int const batch_size = min(num_rle_stream_decode_threads, output_count - written);
-        if (t < batch_size) { 
-          output[rolling_index<max_output_values>(written + t)] = 0; 
-        }
-        written += batch_size;
-      }
-      cur_values += output_count;
-      return output_count;
-    }
-
-    return decode_next(t, max_output_values);
-  }
+  __device__ inline int decode_next(int t) { return decode_next(t, max_output_values); }
 };
 
 }  // namespace cudf::io::parquet::detail
